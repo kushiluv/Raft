@@ -45,23 +45,25 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             # preserve these 4 for disk crashes.
             self.current_term = 0
             self.voted_for = None
-            self.log = [] # Contains pairs of form <msg, term> 
+            self.log = [] # Contains objects of type raftpb2.logentry
             self.commit_length = 0
             self.current_role = "FOLLOWER"  # can be follower, candidate, or leader
             self.current_leader = None
             self.votesReceived = set()
-            self.sentLength  = []
-            self.ackedLength = [] 
+            self.sentLength  = dict()
+            self.ackedLength = dict()
             self.leader_lease_timeout = None
             self.election_timeout = -1
             self.directory = "logs_node_{self.nodeID}"
             setup_directories(self.nodeID)
-            self.init()
+    
+        self.init()
         
 
     def init(self):
         self.set_election_timeout()
         utils.run_thread(fn=self.on_election_timeout, args=())
+        utils.run_thread(fn=self.leader_append_entries, args=())
         
 
     def set_election_timeout(self, timeout=None):
@@ -112,8 +114,10 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 t = utils.run_thread(fn=self.send_vote_req, args = (nodes[i],))
                 threads += [t]
         
+        # wait for all threads to complete, i.e. get vote response from all nodes.
         for t in threads:
             t.join()
+
         return True
     
     def send_vote_req(self, node_address):
@@ -132,30 +136,97 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 print(f"Error occurred while sending RequestVote RPC to node {node_address}: {e}")
 
         print('vote responses were:' + str(response))
+        self.collecting_votes(response)
+
+            
+        
+    def collecting_votes(self, response):
+        # Collecting votes
+        if self.current_role == 'CANDIDATE' and response.term == self.current_term and response.voteGranted:
+            self.votesReceived.add(node_address)
+            if len(self.votesReceived) >= ((len(nodes) + 1)/2):
+                self.current_role = 'LEADER'
+                # or we can make it nodes[self.nodeID] if we want IP
+                self.current_leader = self.nodeID
+
+        
+        elif self.current_term < response.term:
+            print('stepping down')
+            self.current_term = response.term
+            self.current_role = 'FOLLOWER'
+            self.voted_for = None
+            self.set_election_timeout()
+
+
+
         
 
- 
     def RequestVote(self, request, context):
-        print(f"Received RequestVote RPC from candidate")
+        print(f"Received RequestVote RPC from candidate" + str(request.candidateId))
         # Perform voting logic here
-        return raft_pb2.RequestVoteResponse(term=10, voteGranted=True, leaseDuration=5)     
+        if request.term > self.term:
+            self.term = request.term
+            self.current_role = 'FOLLOWER'
+            self.voted_for = None
+        
+        lastTerm = 0
+        if len(self.log) > 0:
+            lastTerm = text_readers.last_term(self.nodeID)
+        
+        logOk = (request.lastLogTerm > lastTerm) or (request.lastLogTerm == lastTerm and request.lastLogIndex >= len(self.log))
+        # change here lease duration.
+        if request.term == self.current_term and logOk and self.voted_for in (request.candidateId, None):
+            self.voted_for = request.candidateId
+            return raft_pb2.RequestVoteResponse(term=self.current_term, voteGranted=True, leaseDuration=5)
+        else:
+            return raft_pb2.RequestVoteResponse(term=self.current_term, voteGranted=False, leaseDuration=5)
 
 
     
+    def leader_append_entries(self):
+        print("sending entries from leader")
+        while True:
+            if self.state == 'LEADER':
+                threads = []
+                for i in range(len(nodes)):
+                    if i != self.nodeID:
+                        self.sentLength[i] = len(self.log)
+                        self.ackedLength[i] = 0
+                        t = utils.run_thread(fn=self.send_entry_req, args = (nodes[i], i))
+                        threads += [t]
 
 
-    def AppendEntries(self, request, context):
-        global current_term, voted_for, commit_length, log, state
-        with state_lock:
-            if request.term < current_term:
-                return raft_pb2.AppendEntriesResponse(success=False, term=current_term)
-            
-            # Reset election timeout
-            reset_election_timeout()
+    # need to see this once, this is replicate log
+    def send_entry_req(self, node_address, follower_id):
+        prefixLen = self.sentLength[i]
+        suffix = []
+        for i in range(prefixLen, len(self.log)):
+            suffix.append(self.log[i])
 
-            # More logic here for appending entries and updating state
-            # ...
+        prefixTerm = 0
+        if prefixLen > 0:
+            prefixTerm = self.log[prefixLen - 1].term
+        
 
+        channel = grpc.insecure_channel(node_address)
+        stub = raft_pb2_grpc.RaftStub(channel)
+        try:
+                response = stub.AppendEntries(raft_pb2.AppendEntriesRequest(
+                        term = self.term,
+                        leaderId = nodes[self.nodeID],
+                        prevLogIndex = prefixLen,
+                        prevLogTerm = prefixTerm,
+                        entries = suffix,
+                        leaderCommit = len(self.log), # not sure about this
+                        leaseInterval = 7, # need to change
+                ))
+                
+        except grpc.RpcError as e:
+                print(f"Error occurred while sending RequestVote RPC to node {node_address}: {e}")  
+
+
+    # code this.
+    def AppendEntries(self, request, context): 
             return raft_pb2.AppendEntriesResponse(success=True, term=current_term)
     
 
