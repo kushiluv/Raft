@@ -60,8 +60,6 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         self.set_election_timeout()
         utils.run_thread(fn=self.on_election_timeout, args=())
         utils.run_thread(fn=self.leader_append_entries, args=())
-        
-
     def set_election_timeout(self, timeout=None):
         # Reset this whenever previous timeout expires and starts a new election
         if timeout:
@@ -123,6 +121,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         stub = raft_pb2_grpc.RaftStub(channel)
         lastLogIndex = len(self.log)
         lastLogTerm = 0
+        # code for updating it if log exitsts
         try:
                 response = stub.RequestVote(raft_pb2.RequestVoteRequest(
                 term=self.current_term,
@@ -130,15 +129,17 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 lastLogIndex = lastLogIndex,
                 lastLogTerm=lastLogTerm
             ))
+                # print('vote responses were:' + str(response))
                 print('vote responses were:' + str(response.voteGranted))
                 print('vote responses were:' + str(response.term))
                 print('vote responses were:' + str(response.leaseDuration))
                 self.collecting_votes(response, node_address)
-                
+
         except grpc.RpcError as e:
                 print(f"Error occurred while sending RequestVote RPC to node {node_address}: {e}")
 
-
+        
+        
 
 
     
@@ -148,25 +149,28 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         # return raft_pb2.RequestVoteResponse(term=self.current_term, voteGranted=False, leaseDuration=5)
         # Perform voting logic here
         print(request.term, request.candidateId, request.lastLogIndex, request.lastLogTerm)
-
         try:
             if request.term > self.current_term:
                 self.current_term = request.term
                 self.current_role = 'FOLLOWER'
                 self.voted_for = None
         except:
-            print("error in request vote")
+            print("Error occurred while sending RequestVote RPC")
         
         lastTerm = 0
         if len(self.log) > 0:
             lastTerm = text_readers.last_term(self.nodeID)
         
         logOk = (request.lastLogTerm > lastTerm) or (request.lastLogTerm == lastTerm and request.lastLogIndex >= len(self.log))
+        print("is logOk:")
+        print(logOk)
         # change here lease duration.
         if request.term == self.current_term and logOk and self.voted_for in (request.candidateId, None):
+            print("vote granted")
             self.voted_for = request.candidateId
             return raft_pb2.RequestVoteResponse(term=self.current_term, voteGranted=True, leaseDuration=5)
         else:
+            print("vote not granted")
             return raft_pb2.RequestVoteResponse(term=self.current_term, voteGranted=False, leaseDuration=5)
 
     # 3
@@ -174,7 +178,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         # Collecting votes
         if self.current_role == 'CANDIDATE' and response.term == self.current_term and response.voteGranted:
             self.votesReceived.add(node_address)
-            if len(self.votesReceived) >= len(nodes)//2 + 1:
+            if len(self.votesReceived) >= ((len(nodes) + 1)/2):
                 self.current_role = 'LEADER'
                 # or we can make it nodes[self.nodeID] if we want IP
                 self.current_leader = self.nodeID
@@ -361,10 +365,10 @@ def is_candidate_log_up_to_date(candidate_last_log_index, candidate_last_log_ter
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    raft_pb2_grpc.add_RaftServicer_to_server(RaftServicer(1), server)
-    server.add_insecure_port('[::]:50051')#
+    raft_pb2_grpc.add_RaftServicer_to_server(RaftServicer(0), server)
+    server.add_insecure_port('[::]:50050')#
     server.start()#
-    print("Server started at [::]:50051")#
+    print("Server started at [::]:50050")#
     try:
         while True:
             time.sleep(86400)
