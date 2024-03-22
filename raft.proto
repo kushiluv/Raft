@@ -10,6 +10,7 @@ service Raft {
   rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse) {}
   // Serves client requests
   rpc ServeClient (ServeClientArgs) returns (ServeClientReply) {}
+  rpc LogResponse (LogResponseRequest) returns (LogResponseReply) {}
 }
 
 // AppendEntries RPC
@@ -26,6 +27,7 @@ message AppendEntriesRequest {
 message AppendEntriesResponse {
   int64 term = 1;
   bool success = 2;
+  int64 ackLength = 3;
 }
 
 // RequestVote RPC
@@ -57,4 +59,16 @@ message ServeClientReply {
   string data = 1;
   string leaderId = 2;
   bool success = 3;
+}
+message LogResponseRequest {
+  int64 term = 1;
+  string followerId = 2;
+  int64 ack = 3;
+  bool success = 4;
+}
+
+message LogResponseReply {
+  // You can include fields here for any additional information you might need
+  // For instance, you could have a field indicating whether the leader has acknowledged the response
+  bool acknowledged = 1;
 }

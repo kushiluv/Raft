@@ -5,7 +5,7 @@ def setup_directories(node_id):
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
     
-    files = ["logs.txt", "metadata.txt", "dump.txt"]
+    files = ["logs.txt", "metadata.txt", "dump.txt" , "state_machine.csv"]
     for file in files:
         file_path = os.path.join(dir_name, file)
         if not os.path.exists(file_path):
