@@ -92,5 +92,6 @@ def commit_entry(node_id, command):
     if command == 'NO-OP':
         set_value_state_machine(node_id, 'NO-OP', 0)
         return
-    _, key, value = command
+    command = command.split()
+    key, value = command[1], command[2]
     set_value_state_machine(node_id, key, value)

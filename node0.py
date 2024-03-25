@@ -11,7 +11,7 @@ import os
 from random import randint
 import utils
 # Global variable for stpring IP of all nodes.
-nodes = ["localhost:50050" , "localhost:50051"] 
+nodes = ["localhost:50050" , "localhost:50051",] 
 
 # Lock for state changes
 state_lock = threading.Lock()
@@ -372,27 +372,35 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
     #         self.commit_length = max(ready)
 
     
-    async def ServeClient(self, request, context):
+    def ServeClient(self, request, context):
         try:
-            
+            print('hello')
             # Correctly access the 'request' field from ServeClientArgs message
-            command = request.request.split()  # Notice the lowercase 'r' in 'request.request'
+            print(request.request)
+            try:
+                command = request.request.split()  # Notice the lowercase 'r' in 'request.request'
+            except Exception as e:
+                print('error in spliting {e}')
             
             if self.current_role != "LEADER":
-                return raft_pb2.ServeClientReply(data="I am not the leader, try pinging:", leaderId=nodes[self.current_leader], success=False)
+                print("The current leader is: "+ str(self.current_leader))
+                return raft_pb2.ServeClientReply(data="I am not the leader, try pinging:", leaderId=nodes[int(self.current_leader)], success=False)
 
             if command[0] == "SET":
-                _, key, value = command
+                key, value = command[1] , command[2]
                 initial_commit_len = self.commit_length
-                obj = raft_pb2.LogEntry(term=self.current_term, command=command)
+                obj = raft_pb2.LogEntry(term=self.current_term, command=request.request)
                 self.log.append(obj)
 
                 # wait for request to get committed.
-                await self.commit_length >= initial_commit_len + 1
+                while(self.commit_length < initial_commit_len + 1): 
+                    continue
+                    time.sleep(1)
+
 
                 #  Append command to state machine.
                 try:
-                    text_readers.set_value_state_machine(self.nodeID, key, value)
+                    # text_readers.set_value_state_machine(self.nodeID, key, value)
                     return raft_pb2.ServeClientReply(data="Command executed", leaderId="", success=True)
                 except:
                     return raft_pb2.ServeClientReply(data="Failed to commit", leaderId="", success=False)
