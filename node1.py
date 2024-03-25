@@ -67,6 +67,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             self.election_timeout = timeout
         else:
             self.election_timeout = time.time() + randint(0,10)
+            self.election_timeout = time.time() + randint(0,10)
         print("time out set to:" + str(self.election_timeout))
 
     # 1
@@ -79,7 +80,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                     (self.current_role == 'FOLLOWER' or self.current_role == 'CANDIDATE'):
 
                 # print("Timeout....")
-                self.set_election_timeout()
+                # self.set_election_timeout()
                 self.start_election()  
 
     def start_election(self):
@@ -106,6 +107,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         print("num of nodes : " + str(len(nodes)))
         for i in range(len(nodes)):
             if i != self.nodeID:
+                t = utils.run_thread(fn=self.send_vote_req, args = (nodes[i], i))
                 t = utils.run_thread(fn=self.send_vote_req, args = (nodes[i], i))
                 threads += [t]
         
@@ -148,6 +150,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             self.current_role = 'FOLLOWER'
             self.voted_for = None
             self.set_election_timeout(time.time() + 10)
+            self.set_election_timeout(time.time() + 10)
         
         lastTerm = 0
         if len(self.log) > 0:
@@ -161,7 +164,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         if request.term == self.current_term and logOk and self.voted_for in (request.candidateId, None):
             print('vote Granted')
             self.voted_for = request.candidateId
-            return raft_pb2.RequestVoteResponse(term=self.current_term, voteGranted=True, leaseDuration=5)
+            return raft_pb2.RequestVoteResponse(term=self.current_term, voteGranted=True, leaseDuration=10)
         else:
             print('vote not granted')
             return raft_pb2.RequestVoteResponse(term=self.current_term, voteGranted=False, leaseDuration=5)
@@ -176,13 +179,11 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 print("Votes received : " , len(self.votesReceived))
                 print(((len(nodes)//2) + 1))
                 
-                self.current_role = 'LEADER'
-                # or we can make it nodes[self.nodeID] if we want IP
-                self.current_leader = self.nodeID
                 print("Node " + str(self.nodeID) + " is now the leader.")
                 self.log.append(raft_pb2.LogEntry(term=self.current_term, command='NO-OP'))
                 self.set_election_timeout(time.time() + 10)
-
+                self.current_role = 'LEADER'
+                self.current_leader = self.nodeID
         
         elif self.current_term < response.term:
             print('stepping down')
@@ -196,6 +197,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         while True:
             time.sleep(1)
             if self.current_role == 'LEADER':
+                print('Sending heartbeat messages')
                 for i in range(len(nodes)):
                     if i != self.nodeID:
                         self.replicate_log(i)
@@ -218,7 +220,6 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 print(f"I am not the leader. Forwarding message to the leader: {self.current_leader}")
                 # This forwarding logic depends on your system design; it might involve sending the message to the leader via RPC or another method.
 
-                
     #5
     def replicate_log(self, follower_id):
         with state_lock:
@@ -229,40 +230,45 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             if prefixLen > 0:
                 prefixTerm = self.log[prefixLen - 1].term
             else:
-                prefixTerm = 0  # Default term for initial log entry
+                prefixTerm = 0  # Default term for initial log entryr
 
             # Create AppendEntriesRequest
             request = raft_pb2.AppendEntriesRequest(
                 term=self.current_term,
                 leaderId=str(self.nodeID),
-                prevLogIndex=prefixLen - 1,
+                prevLogIndex=prefixLen,
                 prevLogTerm=prefixTerm,
                 entries=suffix,
                 leaderCommit=self.commit_length,
                 leaseInterval=5  # Example lease interval
             )
 
+
             # Make the RPC call
             try:
                 channel = grpc.insecure_channel(node_address)
                 stub = raft_pb2_grpc.RaftStub(channel)
                 response = stub.AppendEntries(request, timeout=10.0)  # Setting a timeout
-
-                if response.success:
-                    self.sentLength[follower_id] = prefixLen + len(suffix)
-                    self.ackedLength[follower_id] = self.sentLength[follower_id]
-                    print(f"Successfully replicated log to node {follower_id}")
-                else:
-                    self.sentLength[follower_id] = max(0, prefixLen - 1)
-                    print(f"Failed to replicate log to node {follower_id}. Retrying...")
+                self.LeaderGettingAcks(response, follower_id, prefixLen, len(suffix))
+                
             except grpc.RpcError as e:
-                print(f"RPC to node {follower_id} failed: {e}")     
-    
-    #6
+                print(f"RPC to node {follower_id} failed: {e}")  
+            
+            time.sleep(1)                
+
+    #6 and 7
     def AppendEntries(self, request, context):
+        print("Append Enteries request was received from node: " + str(request.leaderId))
         with state_lock:
+            print('Processing AppendEnteries RPC')
+            
+            # Change self's election timer so as heartbeat msg was received.
+            print('Incrementing nodes election timout timer: ', request.leaseInterval)
+            self.set_election_timeout(time.time() + (request.leaseInterval))
+
             # If RPC request term is greater than node's current term
             if request.term > self.current_term:
+                print('The request term was higher, update self leader and term')
                 self.current_term = request.term
                 self.voted_for = None
                 self.current_role = 'FOLLOWER'
@@ -280,7 +286,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 log_ok = self.log[request.prevLogIndex - 1].term == request.prevLogTerm
             else:
                 log_ok = request.prevLogIndex == 0  # True if prevLogIndex is 0, indicating a heartbeat or initial log entry
-
+            print('The leader logs were found to be:' + str(log_ok))
             # If logs are consistent, append new entries and update commit index
             if log_ok:
                 if request.entries:  # Only proceed if there are new entries
@@ -298,26 +304,51 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                     for i in range(self.commit_length, new_commit_index):
                         # Apply the log[i].command to the state machine here
                         print(f"Applying to state machine: {self.log[i].command}")
+                        text_readers.commit_entry(self.nodeID, self.log[i].command)
                     self.commit_length = new_commit_index
-
+                print('Returning success message to leader')
                 return raft_pb2.AppendEntriesResponse(term=self.current_term, success=True)
             else:
                 # If log consistency check fails, respond with failure
                 return raft_pb2.AppendEntriesResponse(term=self.current_term, success=False)
 
+    #8
+    def LeaderGettingAcks(self, response, follower_id, prefixLen, suffixLen):
+            print(response.term)
+            print(self.current_term)
+            if response.term == self.current_term and self.current_role=='LEADER':
+                if response.success == True:
+                    print(f"Successfully replicated log to node {follower_id}")
+                    self.sentLength[follower_id] = prefixLen + suffixLen
+                    self.ackedLength[follower_id] = self.sentLength[follower_id]
+                    self.commit_log_entries()
+                
+                elif self.sentLength[follower_id] > 0:
+                    print(f"Failed to replicate log to node {follower_id}. Retrying...")
+                    self.sentLength[follower_id] -=1
+                    self.replicate_log(follower_id)
+
+            elif response.term > self.current_term:
+                self.current_term = response.term
+                self.current_role = 'FOLLOWER'
+                self.voted_for = None
+                self.set_election_timeout()
+
 
     def commit_log_entries(self):
-        with state_lock:
+            print('Invoked Commit enteries')
             # Check if there are any new entries we can commit
+            minAcks = (len(nodes) + 1)//2
             for i in range(self.commit_length + 1, len(self.log) + 1):
-                if self.acks(i) > (len(nodes) // 2):
+                if self.acks(i) >= minAcks:
                     # Apply log[i-1].command to the state machine (e.g., execute the command)
                     print(f"Committed log index {i-1} with term {self.log[i-1].term}")
+                    text_readers.commit_entry(self.nodeID, self.log[i-1].command)
                     self.commit_length = i
+
     def acks(self, length):
-        with state_lock:
-            # Ensure we're accessing existing keys in ackedLength.
-            return sum(1 for ack in self.ackedLength.values() if ack >= length)
+        # Ensure we're accessing existing keys in ackedLength.
+        return sum(1 for ack in self.ackedLength.values() if ack >= length)
 
                         
     
@@ -325,57 +356,62 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         with state_lock:
             self.election_timeout = time.time() + random.uniform(5, 10)
             print("Election timeout reset to:", self.election_timeout)
-    
 
     
+# #9
   
-#9
-  
-    def CommitLogEntries(self):
-        minAcks = (len(nodes) + 1) // 2
-        ready = []
-        for i in range(1, len(self.log) + 1):
-            if self.acks(i) >= minAcks:
-                ready.append(i)
-        if ready!=[] and max(ready)>self.commit_length and self.log[max(ready)-1].term == self.current_term:
-            #write changes into state machine here / ie to the DB
-            self.commit_length = max(ready)
-
+#     def CommitLogEntries(self):
+#         minAcks = (len(nodes) + 1) // 2
+#         ready = []
+#         for i in range(1, len(self.log) + 1):
+#             if self.acks(i) >= minAcks:
+#                 ready.append(i)
+#         if ready!=[] and max(ready)>self.commit_length and self.log[max(ready)-1].term == self.current_term:
+#             #write changes into state machine here / ie to the DB
+#             for j in ready:
+#                 print(f'Committing entry at log index:{i} to db' )
+#                 text_readers.commit_entry(self.log[i].command)
+#             self.commit_length = max(ready)
     
 
-
-        
-
-
-
-    
-
-    
-
-    # def ServeClient(self, request, context):
-    #     try:
-    #         global state, log, commit_length
+async def ServeClient(self, request, context):
+        try:
             
-    #         # Correctly access the 'request' field from ServeClientArgs message
-    #         command = request.request.split()  # Notice the lowercase 'r' in 'request.request'
+            # Correctly access the 'request' field from ServeClientArgs message
+            command = request.request.split()  # Notice the lowercase 'r' in 'request.request'
             
-    #         if state != "leader":
-    #             return raft_pb2.ServeClientReply(data="", leaderId="leader_id_if_known", success=False)
+            if self.current_role != "LEADER":
+                return raft_pb2.ServeClientReply(data="I am not the leader, try pinging:", leaderId=nodes[self.current_leader], success=False)
 
-    #         if command[0] == "SET":
-    #             _, key, value = command
-    #             log.append({"term": current_term, "command": f"SET {key} {value}"})
-    #             commit_length += 1  # This is simplified; real commit logic is needed
-    #             return raft_pb2.ServeClientReply(data="", leaderId="", success=True)
-    #         elif command[0] == "GET":
-    #             key = command[1]
-    #             value = next((entry["command"].split()[2] for entry in log if entry["command"].startswith(f"SET {key}")), "")
-    #             return raft_pb2.ServeClientReply(data=value, leaderId="", success=True)
-    #         else:
-    #             return raft_pb2.ServeClientReply(data="Invalid command", leaderId="", success=False)
-    #     except Exception as e:
-    #         print(f"Exception in ServeClient: {e}")
-    #         return raft_pb2.ServeClientReply(data="An error occurred", leaderId="", success=False)
+            if command[0] == "SET":
+                _, key, value = command
+                initial_commit_len = self.commit_length
+                obj = raft_pb2.LogEntry(term=self.current_term, command=command)
+                self.log.append(obj)
+
+                # wait for request to get committed.
+                await self.commit_length >= initial_commit_len + 1
+
+                #  Append command to state machine.
+                try:
+                    text_readers.set_value_state_machine(self.nodeID, key, value)
+                    return raft_pb2.ServeClientReply(data="Command executed", leaderId="", success=True)
+                except:
+                    return raft_pb2.ServeClientReply(data="Failed to commit", leaderId="", success=False)
+
+            elif command[0] == "GET":
+                try:
+                    key = command[1]
+                    value = text_readers.get_value_state_machine(self.nodeID, key)
+                    return raft_pb2.ServeClientReply(data="Value found to be" + str(value), leaderId="", success=True)
+                except:
+                    return raft_pb2.ServeClientReply(data="Some error occurred", leaderId="", success=False)
+
+            else:
+                return raft_pb2.ServeClientReply(data="Invalid command", leaderId="", success=False)
+        except Exception as e:
+            print(f"Exception in ServeClient: {e}")
+            return raft_pb2.ServeClientReply(data="An error occurred", leaderId="", success=False)
 
 
 def reset_election_timeout():

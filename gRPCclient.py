@@ -13,9 +13,23 @@ def send_get_request(stub, key):
 def main():
     with grpc.insecure_channel('localhost:50051') as channel:
         stub = raft_pb2_grpc.RaftStub(channel)
-        # Example client request to set and get values
-        send_set_request(stub, "key1", "value1")
-        send_get_request(stub, "key1")
+        while True:
+            print("Enter 1 for GET request, 2 for SET request, or any other key to exit:")
+            choice = input().strip()
+            
+            if choice == "1":
+                print("Enter key for GET request:")
+                key = input().strip()
+                send_get_request(stub, key)
+            elif choice == "2":
+                print("Enter key for SET request:")
+                key = input().strip()
+                print("Enter value for SET request:")
+                value = input().strip()
+                send_set_request(stub, key, value)
+            else:
+                print("Exiting...")
+                break
 
 if __name__ == '__main__':
     main()
