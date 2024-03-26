@@ -1,7 +1,11 @@
 # Contains utility functions for reading/writing to the text files.
 import os
 import json
+from google.protobuf.json_format import MessageToJson
 
+def log_entry_to_json(log_entry):
+    # Convert a LogEntry object to a JSON string
+    return MessageToJson(log_entry)
 def read_metadata_file(nodeID):
             directory_name = f"logs_node_{nodeID}"
             file_path = os.path.join(directory_name, "metadata.txt")
@@ -95,3 +99,28 @@ def commit_entry(node_id, command):
     command = command.split()
     key, value = command[1], command[2]
     set_value_state_machine(node_id, key, value)
+
+def log_to_dump(self, message):
+    print(self.directory)
+    file_path = os.path.join(self.directory, "dump.txt")
+    with open(file_path, 'a') as file:
+        file.write(message + '\n')
+
+def write_logs(self):
+    # Each log entry will be saved in the format "term: {term}, command: {command}"
+    logs_as_lines = [f"term: {log.term}, command: {log.command}" for log in self.log]
+    file_path = os.path.join(self.directory, "logs.txt")
+    with open(file_path, 'w') as file:
+        for line in logs_as_lines:
+            file.write(line + '\n')
+
+def write_metadata_file(self):
+    metadata_content = [
+        str(self.current_term),
+        self.voted_for if self.voted_for is not None else "",
+        str(self.commit_length),
+        self.current_leader if self.current_leader is not None else ""
+    ]
+    file_path = os.path.join(self.directory, "metadata.txt")
+    with open(file_path, 'w') as file:
+        file.write('\n'.join(metadata_content))
