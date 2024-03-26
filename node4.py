@@ -496,8 +496,8 @@ def is_candidate_log_up_to_date(candidate_last_log_index, candidate_last_log_ter
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    raft_pb2_grpc.add_RaftServicer_to_server(RaftServicer(1), server)
-    server.add_insecure_port('[::]:50051')#
+    raft_pb2_grpc.add_RaftServicer_to_server(RaftServicer(4), server)
+    server.add_insecure_port('[::]:50054')#
     server.start()#
     print("Server started at [::]:50050")#
     try:

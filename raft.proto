@@ -41,7 +41,7 @@ message RequestVoteRequest {
 message RequestVoteResponse {
   int64 term = 1;
   bool voteGranted = 2;
-  int64 leaseDuration = 3; // For leader lease
+  float leaseDuration = 3; // For leader lease
 }
 
 // Log entry

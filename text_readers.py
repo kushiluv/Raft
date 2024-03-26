@@ -33,13 +33,15 @@ def last_term(node_id):
     if os.path.exists(file_path) and os.path.isfile(file_path):
         with open(file_path, 'r') as file:
             lines = file.readlines()
-            if(len(lines)) == 0:
+            if not lines:
                 return 0
             else:
                 last_line = lines[-1].strip()
-                return last_line[-1]
+                term_str = last_line.split(',')[0]
+                term = int(term_str.split(': ')[1])
+                return term
     else:
-        return None  # If the file or directory does not exist
+        return None
 
 def get_value_state_machine(node_id, variable_name):
     # Construct the file path using the node_id
@@ -117,9 +119,9 @@ def write_logs(self):
 def write_metadata_file(self):
     metadata_content = [
         str(self.current_term),
-        self.voted_for if self.voted_for is not None else "",
+        str(self.voted_for) if self.voted_for is not None else "",
         str(self.commit_length),
-        self.current_leader if self.current_leader is not None else ""
+        str(self.current_leader) if self.current_leader is not None else ""
     ]
     file_path = os.path.join(self.directory, "metadata.txt")
     with open(file_path, 'w') as file:
