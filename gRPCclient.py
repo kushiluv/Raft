@@ -1,39 +1,64 @@
 import grpc
 import raft_pb2
 import raft_pb2_grpc
+import time
+nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
+leader_addr = "localhost:50051"
+def send_request(stub, request_type, key, value=None):
+    """Send a request and return the response object."""
+    if request_type == "SET":
+        request_str = f"SET {key} {value}"
+    else:  # GET
+        request_str = f"GET {key}"
+    
+    request_args = raft_pb2.ServeClientArgs(request=request_str)
+    response = stub.ServeClient(request_args)
+    return response
 
-def send_set_request(stub, key, value):
-    # channel = grpc.insecure_channel("localhost:50051")
-    # stub = raft_pb2_grpc.RaftStub(channel)
-    response = stub.ServeClient(raft_pb2.ServeClientArgs(request=f"SET {key} {value}"))
-    print(f"Set response: Success: {response.success}, Data: {response.data}, LeaderID: {response.leaderId}")
-
-def send_get_request(stub, key):
-    # channel = grpc.insecure_channel("localhost:50051")
-    # stub = raft_pb2_grpc.RaftStub(channel)
-    response = stub.ServeClient(raft_pb2.ServeClientArgs(request=f"GET {key}"))
-    print(f"Get response: Success: {response.success}, Data: {response.data}, LeaderID: {response.leaderId}")
+def attempt_send_request(request_type, key, value=None):
+    global leader_addr
+    """Attempt to send a request, handling redirection if necessary."""
+    with grpc.insecure_channel(leader_addr) as channel:
+        stub = raft_pb2_grpc.RaftStub(channel)
+        response = send_request(stub, request_type, key, value)
+        
+        # Check if we need to redirect to the leader
+        if not response.success and response.leaderId:
+            # Redirect to the leader and resend the request
+            leader_addr = response.leaderId
+            time.sleep(1)
+            return attempt_send_request( request_type, key, value)
+        
+        # Return the final response
+        return response
 
 def main():
-    with grpc.insecure_channel('localhost:50052') as channel:
-        stub = raft_pb2_grpc.RaftStub(channel)
-        while True:
-            print("Enter 1 for GET request, 2 for SET request, or any other key to exit:")
-            choice = input().strip()
-            
-            if choice == "1":
-                print("Enter key for GET request:")
-                key = input().strip()
-                send_get_request(stub, key)
-            elif choice == "2":
-                print("Enter key for SET request:")
-                key = input().strip()
-                print("Enter value for SET request:")
-                value = input().strip()
-                send_set_request(stub, key, value)
-            else:
-                print("Exiting...")
-                break
+    while True:
+        global leader_addr
+        print("Enter 1 for GET request, 2 for SET request, or any other key to exit:")
+        choice = input().strip()
+
+        if choice not in ["1", "2"]:
+            print("Exiting...")
+            break
+
+        print("Enter key:")
+        key = input().strip()
+        value = None
+        if choice == "2":
+            print("Enter value for SET request:")
+            value = input().strip()
+
+        request_type = "GET" if choice == "1" else "SET"
+
+        # # Try sending the request to each node until one succeeds or redirects to the leader
+        # for node in nodes:
+        try:
+            response = attempt_send_request(request_type, key, value)
+            print(f"Response: Success: {response.success}, Data: {response.data}, LeaderID: {response.leaderId}")
+            # break  # A successful response (or a final failure response) was received
+        except grpc.RpcError as e:
+            print(f"Could not connect to {leader_addr}. Error: {e}")
 
 if __name__ == '__main__':
     main()

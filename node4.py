@@ -12,7 +12,7 @@ import os
 from random import randint
 import utils
 # Global variable for stpring IP of all nodes.
-nodes = ["localhost:50050" , "localhost:50051", "localhost:50052", "localhost:50053", "localhost:50054" ]
+nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
 
 # Lock for state changes
 state_lock = threading.Lock()
@@ -22,18 +22,21 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         # Create a directory on initialisation
         self.nodeID = nodeID
         # recover values from metadata file after crash
-        if os.path.exists('logs_node_{self.nodeID}'):
+        if os.path.exists(f'logs_node_{self.nodeID}'):
             values = text_readers.read_metadata_file(self.nodeID)
+            nv = 'term :{}, vote_for:{}, commitlength:{}, current_leader:{}'.format(values[0], values[1], values[2], values[3])
+            print('Resetting node values from metadata:' , str(nv))
             self.current_term, self.voted_for , self.commit_length, self.current_leader = values[0], values[1], values[2], values[3]
             
             # these values are reset.
+            self.log = []
             self.current_role = 'FOLLOWER'
             self.current_leader = None
             self.votesReceived = set()
             self.sentLength  = dict()
             self.ackedLength = {node_index: 0 for node_index in range(len(nodes))}
             self.election_timeout = None
-            self.election_timeout_interval = randint(5000,10000)/1000.0
+            self.election_timeout_interval = 5.0 + nodeID
             self.directory = f"logs_node_{self.nodeID}"
             
             # this should also get reset right ?
@@ -56,7 +59,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             self.leader_lease_timeout_interval = 10
 
             self.election_timeout = -1
-            self.election_timeout_interval = randint(5000,10000)/1000.0
+            self.election_timeout_interval = 5.0 + nodeID
             self.directory = f"logs_node_{self.nodeID}"
             setup_directories(self.nodeID)
     
@@ -194,7 +197,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             return raft_pb2.RequestVoteResponse(
                         term=self.current_term,
                         voteGranted=True,
-                        leaseDuration=self.leader_lease_timeout_interval
+                        leaseDuration=self.leader_lease_timeout
                     )
         else:
             print('vote not granted')
@@ -202,13 +205,14 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             return raft_pb2.RequestVoteResponse(
                     term=self.current_term,
                     voteGranted=False,
-                    leaseDuration=self.leader_lease_timeout_interval
+                    leaseDuration=self.leader_lease_timeout
                 )
         write_metadata_file(self)
 
     # 3
     def collecting_votes(self, response, node_address):
         with state_lock:
+            self.leader_lease_timeout = max(self.leader_lease_timeout, response.leaseDuration)
             if self.current_role == 'CANDIDATE' and response.term == self.current_term and response.voteGranted:
                 print("collecting votes")
                 self.votesReceived.add(node_address)
@@ -218,7 +222,9 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                     
                     now = time.time()
                     if now < self.leader_lease_timeout:
+                        print("inside condition")
                         time.sleep(self.leader_lease_timeout - now)
+                        print("sleep completed")
                     self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
                     print("Node " + str(self.nodeID) + " is now the leader.")
                     self.log.append(raft_pb2.LogEntry(term=self.current_term, command='NO-OP'))
@@ -238,17 +244,44 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 self.set_election_timeout()
 
     # function to send append_enteries and heartbeats 
+                
+    def step_down(self,new_term):
+        with state_lock:
+            self.current_term = new_term
+            self.current_role = 'FOLLOWER'
+            self.voted_for = None
+            self.current_leader = None  # Resetting current leader since stepping down
+            self.votesReceived.clear()
+            self.set_election_timeout()
+            print(f"Node {self.nodeID} stepped down to FOLLOWER in term {self.current_term}.")
+
     def leader_append_entries(self):
         while True:
-            time.sleep(1)
+            time.sleep(1)  # Control the frequency of heartbeat messages
             if self.current_role == 'LEADER':
-                msg =f" Leader {self.nodeID} sending heartbeat & Renewing Lease"
+                # Check if the leader's lease has expired before sending out new heartbeats
+                now = time.time()
+                if now > self.leader_lease_timeout:
+                    print(f"Leader {self.nodeID}'s lease has expired. Stepping down.")
+                    self.step_down(self.current_term)
+                    continue
+
+                msg = f"Leader {self.nodeID} sending heartbeat & attempting to renew lease"
                 print(msg)
                 log_to_dump(self, msg)
-                # self.leader_lease_timeout = time.time() + self.leader_lease_timeout
+                
+                acks_received = 0
                 for i in range(len(nodes)):
                     if i != self.nodeID:
-                        self.replicate_log(i)
+                        ack = self.replicate_log(i)
+                        if ack:
+                            acks_received += 1
+
+                # Check if a majority of acks have been received to renew the lease
+                if acks_received >= (len(nodes) // 2):
+                    self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
+                    print(f"Leader {self.nodeID}'s lease renewed until {self.leader_lease_timeout}")
+
                 self.commit_log_entries()
 
     #4
@@ -332,12 +365,15 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 if self.current_role != 'LEADER':
                     self.current_role = 'FOLLOWER'
                     self.current_leader = request.leaderId
-
+            self.election_timeout+=self.election_timeout_interval
             # Prepare for log consistency check
+            # print(self.log[request.prevLogIndex - 1].term)
+            # print(request.prevLogTerm)
             if request.prevLogIndex > 0 and request.prevLogIndex <= len(self.log):
                 log_ok = self.log[request.prevLogIndex - 1].term == request.prevLogTerm
             else:
                 log_ok = request.prevLogIndex == 0  # True if prevLogIndex is 0, indicating a heartbeat or initial log entry
+
             print('The leader logs were found to be:' + str(log_ok))
             # If logs are consistent, append new entries and update commit index
             if log_ok:
@@ -392,14 +428,16 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             else:
                 if self.sentLength[follower_id] > 0:
                     print(f"Failed to replicate log to node {follower_id}. Retrying...")
+                    # changed here, send the whole log
                     self.sentLength[follower_id] -= 1
-                    self.replicate_log(follower_id)
+                    # self.sentLength[follower_id] = 0
+                    # self.replicate_log(follower_id)
         elif response.term > self.current_term:
             self.step_down(response.term)
 
     def has_majority_ack(self):
         ack_count = sum(1 for ack in self.ackedLength.values() if ack >= len(self.log))
-        return ack_count > len(nodes) // 2
+        return ack_count >= (len(nodes)-1) // 2
 
 
 
@@ -499,7 +537,7 @@ def serve():
     raft_pb2_grpc.add_RaftServicer_to_server(RaftServicer(4), server)
     server.add_insecure_port('[::]:50054')#
     server.start()#
-    print("Server started at [::]:50050")#
+    print("Server started at [::]:50054")#
     try:
         while True:
             time.sleep(86400)

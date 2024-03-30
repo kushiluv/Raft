@@ -12,7 +12,7 @@ import os
 from random import randint
 import utils
 # Global variable for stpring IP of all nodes.
-nodes = ["localhost:50050" , "localhost:50051", "localhost:50052"]
+nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
 
 # Lock for state changes
 state_lock = threading.Lock()
@@ -22,18 +22,21 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         # Create a directory on initialisation
         self.nodeID = nodeID
         # recover values from metadata file after crash
-        if os.path.exists('logs_node_{self.nodeID}'):
+        if os.path.exists(f'logs_node_{self.nodeID}'):
             values = text_readers.read_metadata_file(self.nodeID)
+            nv = 'term :{}, vote_for:{}, commitlength:{}, current_leader:{}'.format(values[0], values[1], values[2], values[3])
+            print('Resetting node values from metadata:' , str(nv))
             self.current_term, self.voted_for , self.commit_length, self.current_leader = values[0], values[1], values[2], values[3]
             
             # these values are reset.
+            self.log = []
             self.current_role = 'FOLLOWER'
             self.current_leader = None
             self.votesReceived = set()
             self.sentLength  = dict()
             self.ackedLength = {node_index: 0 for node_index in range(len(nodes))}
             self.election_timeout = None
-            self.election_timeout_interval = randint(5000,10000)/1000.0
+            self.election_timeout_interval = 5.0 + nodeID
             self.directory = f"logs_node_{self.nodeID}"
             
             # this should also get reset right ?
@@ -56,7 +59,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             self.leader_lease_timeout_interval = 10
 
             self.election_timeout = -1
-            self.election_timeout_interval = randint(5000,10000)/1000.0
+            self.election_timeout_interval = 5.0 + nodeID
             self.directory = f"logs_node_{self.nodeID}"
             setup_directories(self.nodeID)
     
@@ -362,12 +365,15 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 if self.current_role != 'LEADER':
                     self.current_role = 'FOLLOWER'
                     self.current_leader = request.leaderId
-
+            self.election_timeout+=self.election_timeout_interval
             # Prepare for log consistency check
+            # print(self.log[request.prevLogIndex - 1].term)
+            # print(request.prevLogTerm)
             if request.prevLogIndex > 0 and request.prevLogIndex <= len(self.log):
                 log_ok = self.log[request.prevLogIndex - 1].term == request.prevLogTerm
             else:
                 log_ok = request.prevLogIndex == 0  # True if prevLogIndex is 0, indicating a heartbeat or initial log entry
+
             print('The leader logs were found to be:' + str(log_ok))
             # If logs are consistent, append new entries and update commit index
             if log_ok:
@@ -422,14 +428,16 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             else:
                 if self.sentLength[follower_id] > 0:
                     print(f"Failed to replicate log to node {follower_id}. Retrying...")
+                    # changed here, send the whole log
                     self.sentLength[follower_id] -= 1
-                    self.replicate_log(follower_id)
+                    # self.sentLength[follower_id] = 0
+                    # self.replicate_log(follower_id)
         elif response.term > self.current_term:
             self.step_down(response.term)
 
     def has_majority_ack(self):
         ack_count = sum(1 for ack in self.ackedLength.values() if ack >= len(self.log))
-        return ack_count > len(nodes) // 2
+        return ack_count >= (len(nodes)-1) // 2
 
 
 
