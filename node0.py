@@ -194,7 +194,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             return raft_pb2.RequestVoteResponse(
                         term=self.current_term,
                         voteGranted=True,
-                        leaseDuration=self.leader_lease_timeout_interval
+                        leaseDuration=self.leader_lease_timeout
                     )
         else:
             print('vote not granted')
@@ -202,13 +202,14 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             return raft_pb2.RequestVoteResponse(
                     term=self.current_term,
                     voteGranted=False,
-                    leaseDuration=self.leader_lease_timeout_interval
+                    leaseDuration=self.leader_lease_timeout
                 )
         write_metadata_file(self)
 
     # 3
     def collecting_votes(self, response, node_address):
         with state_lock:
+            self.leader_lease_timeout = max(self.leader_lease_timeout, response.leaseDuration)
             if self.current_role == 'CANDIDATE' and response.term == self.current_term and response.voteGranted:
                 print("collecting votes")
                 self.votesReceived.add(node_address)
@@ -219,7 +220,6 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                     now = time.time()
                     if now < self.leader_lease_timeout:
                         print("inside condition")
-                        print(self.leader_lease_timeout - now)
                         time.sleep(self.leader_lease_timeout - now)
                         print("sleep completed")
                     self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
@@ -241,17 +241,44 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 self.set_election_timeout()
 
     # function to send append_enteries and heartbeats 
+                
+    def step_down(self,new_term):
+        with state_lock:
+            self.current_term = new_term
+            self.current_role = 'FOLLOWER'
+            self.voted_for = None
+            self.current_leader = None  # Resetting current leader since stepping down
+            self.votesReceived.clear()
+            self.set_election_timeout()
+            print(f"Node {self.nodeID} stepped down to FOLLOWER in term {self.current_term}.")
+
     def leader_append_entries(self):
         while True:
-            time.sleep(1)
+            time.sleep(1)  # Control the frequency of heartbeat messages
             if self.current_role == 'LEADER':
-                msg =f" Leader {self.nodeID} sending heartbeat & Renewing Lease"
+                # Check if the leader's lease has expired before sending out new heartbeats
+                now = time.time()
+                if now > self.leader_lease_timeout:
+                    print(f"Leader {self.nodeID}'s lease has expired. Stepping down.")
+                    self.step_down(self.current_term)
+                    continue
+
+                msg = f"Leader {self.nodeID} sending heartbeat & attempting to renew lease"
                 print(msg)
                 log_to_dump(self, msg)
-                # self.leader_lease_timeout = time.time() + self.leader_lease_timeout
+                
+                acks_received = 0
                 for i in range(len(nodes)):
                     if i != self.nodeID:
-                        self.replicate_log(i)
+                        ack = self.replicate_log(i)
+                        if ack:
+                            acks_received += 1
+
+                # Check if a majority of acks have been received to renew the lease
+                if acks_received >= (len(nodes) // 2):
+                    self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
+                    print(f"Leader {self.nodeID}'s lease renewed until {self.leader_lease_timeout}")
+
                 self.commit_log_entries()
 
     #4
