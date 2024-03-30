@@ -12,7 +12,7 @@ import os
 from random import randint
 import utils
 # Global variable for stpring IP of all nodes.
-nodes = ["localhost:50050" , "localhost:50051", "localhost:50052", "localhost:50053", "localhost:50054" ]
+nodes = ["localhost:50050" , "localhost:50051", "localhost:50052"]
 
 # Lock for state changes
 state_lock = threading.Lock()
@@ -38,7 +38,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             
             # this should also get reset right ?
             self.leader_lease_timeout = -1
-            self.leader_lease_timeout_interval = 10
+            self.leader_lease_timeout_interval =   10
 
         
         else:
@@ -218,7 +218,12 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                     
                     now = time.time()
                     if now < self.leader_lease_timeout:
+                        print("inside condition")
+                        print(self.leader_lease_timeout)
+                        print(now)
+                        print(self.leader_lease_timeout - now)
                         time.sleep(self.leader_lease_timeout - now)
+                        print("sleep completed")
                     self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
                     print("Node " + str(self.nodeID) + " is now the leader.")
                     self.log.append(raft_pb2.LogEntry(term=self.current_term, command='NO-OP'))
@@ -319,6 +324,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             print('Incrementing nodes election timout timer: ', request.leaseInterval)
             self.set_election_timeout()
             self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
+            print(self.nodeID, self.leader_lease_timeout)
             # If RPC request term is greater than node's current term
             if request.term > self.current_term:
                 print('The request term was higher, update self leader and term')
