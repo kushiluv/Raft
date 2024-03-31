@@ -258,6 +258,8 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
     def leader_append_entries(self):
         while True:
             time.sleep(1)  # Control the frequency of heartbeat messages
+            print("Current Time:",time.time())
+            print("Lease End Time:",self.leader_lease_timeout)
             if self.current_role == 'LEADER':
                 # Check if the leader's lease has expired before sending out new heartbeats
                 now = time.time()
@@ -274,9 +276,11 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 for i in range(len(nodes)):
                     if i != self.nodeID:
                         ack = self.replicate_log(i)
+                        print("ack response was:" , ack)
                         if ack:
                             acks_received += 1
 
+                print('total acks received are:' , str(acks_received))
                 # Check if a majority of acks have been received to renew the lease
                 if acks_received >= (len(nodes) // 2):
                     self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
@@ -331,12 +335,13 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 channel = grpc.insecure_channel(node_address)
                 stub = raft_pb2_grpc.RaftStub(channel)
                 response = stub.AppendEntries(request, timeout=10.0)  # Setting a timeout
-                self.LeaderGettingAcks(response, follower_id, prefixLen, len(suffix))
-                
+                return self.LeaderGettingAcks(response, follower_id, prefixLen, len(suffix))
+
             except grpc.RpcError as e:
                 msg = f"RPC to node {follower_id} failed: {e}"
                 log_to_dump(self, msg)
                 print(f"RPC to node {follower_id} failed: {e}")  
+                return False
             
             time.sleep(1)
     
@@ -419,12 +424,13 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 self.ackedLength[follower_id] = self.sentLength[follower_id]
 
                 # Check if a majority of acks has been received
-                if self.has_majority_ack():
-                    # Only renew the lease after receiving majority acks
-                    self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
-                    print(f"Lease renewed after receiving majority acks at {self.leader_lease_timeout}")
+                # if self.has_majority_ack():
+                #     # Only renew the lease after receiving majority acks
+                #     self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
+                #     print(f"Lease renewed after receiving majority acks at {self.leader_lease_timeout}")
                     
                 self.commit_log_entries()
+                
             else:
                 if self.sentLength[follower_id] > 0:
                     print(f"Failed to replicate log to node {follower_id}. Retrying...")
@@ -432,8 +438,10 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                     self.sentLength[follower_id] -= 1
                     # self.sentLength[follower_id] = 0
                     # self.replicate_log(follower_id)
+            return True
         elif response.term > self.current_term:
             self.step_down(response.term)
+            return False
 
     def has_majority_ack(self):
         ack_count = sum(1 for ack in self.ackedLength.values() if ack >= len(self.log))
@@ -446,7 +454,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         print('Current log length:', len(self.log))
         print('Current log:', self.log)
         # Check if there are any new entries we can commit
-        minAcks = (len(nodes) + 1)//2
+        minAcks =((len(nodes) + 1)//2)-1
         for i in range(self.commit_length + 1, len(self.log) + 1):
             if self.acks(i) >= minAcks:
                 # Apply log[i-1].command to the state machine (e.g., execute the command)

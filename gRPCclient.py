@@ -33,6 +33,7 @@ def attempt_send_request(request_type, key, value=None):
         return response
 
 def main():
+    cl = 0
     while True:
         global leader_addr
         print("Enter 1 for GET request, 2 for SET request, or any other key to exit:")
@@ -59,6 +60,8 @@ def main():
             # break  # A successful response (or a final failure response) was received
         except grpc.RpcError as e:
             print(f"Could not connect to {leader_addr}. Error: {e}")
+            leader_addr = nodes[(cl+1)%5]
+            cl +=1
 
 if __name__ == '__main__':
     main()
