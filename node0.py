@@ -12,7 +12,8 @@ import os
 from random import randint
 import utils
 # Global variable for stpring IP of all nodes.
-nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
+nodes = ["34.131.182.182:50050", "34.131.29.154:50050", "34.131.170.187:50050", "34.131.44.163:50050", "34.131.38.113:50050"]
+# nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
 
 # Lock for state changes
 state_lock = threading.Lock()

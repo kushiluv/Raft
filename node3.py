@@ -12,8 +12,8 @@ import os
 from random import randint
 import utils
 # Global variable for stpring IP of all nodes.
-nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
-
+# nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
+nodes = ["34.131.182.182:50050", "34.131.29.154:50050", "34.131.170.187:50050", "34.131.44.163:50050", "34.131.38.113:50050"]
 # Lock for state changes
 state_lock = threading.Lock()
 
@@ -543,9 +543,9 @@ def is_candidate_log_up_to_date(candidate_last_log_index, candidate_last_log_ter
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     raft_pb2_grpc.add_RaftServicer_to_server(RaftServicer(3), server)
-    server.add_insecure_port('[::]:50053')#
+    server.add_insecure_port('[::]:50050')#
     server.start()#
-    print("Server started at [::]:50053")#
+    print("Server started at [::]:50050")#
     try:
         while True:
             time.sleep(86400)

@@ -2,8 +2,12 @@ import grpc
 import raft_pb2
 import raft_pb2_grpc
 import time
-nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
-leader_addr = "localhost:50051"
+# nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
+# leader_addr = "localhost:50051"
+
+nodes = ["34.131.182.182:50050", "34.131.29.154:50050", "34.131.170.187:50050", "34.131.44.163:50050", "34.131.38.113:50050"]
+leader_addr = "34.131.182.182:50050"
+
 def send_request(stub, request_type, key, value=None):
     """Send a request and return the response object."""
     if request_type == "SET":
