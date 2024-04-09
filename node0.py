@@ -12,8 +12,8 @@ import os
 from random import randint
 import utils
 # Global variable for stpring IP of all nodes.
-nodes = ["34.131.182.182:50050", "34.131.29.154:50050", "34.131.170.187:50050", "34.131.44.163:50050", "34.131.38.113:50050"]
-# nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
+# nodes = ["34.131.182.182:50050", "34.131.29.154:50050", "34.131.170.187:50050", "34.131.44.163:50050", "34.131.38.113:50050"]
+nodes = ["localhost:50050" , "localhost:50051", "localhost:50052" , "localhost:50053" , "localhost:50054"]
 
 # Lock for state changes
 state_lock = threading.Lock()
@@ -147,9 +147,9 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             ), timeout=1)
             
             if response.voteGranted:
-                msg = f"Vote granted for Node {nodeID} in term {self.current_term}"
+                msg = f"Vote granted by Node {nodeID} in term {self.current_term}"
             else:
-                msg = f"Vote denied for Node {nodeID} in term {self.current_term}"
+                msg = f"Vote denied by Node {nodeID} in term {self.current_term}"
 
             log_to_dump(self, msg)
             print(msg)
@@ -193,7 +193,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
         print(self.voted_for)
         if request.term == self.current_term and logOk and self.voted_for in (request.candidateId, None):
             print(f'vote Granted to {request.candidateId}')
-            log_to_dump(self, f'vote granted to {request.candidateId}')
+            log_to_dump(self, f'vote granted to {request.candidateId} in term {self.current_term}')
             self.voted_for = request.candidateId
             return raft_pb2.RequestVoteResponse(
                         term=self.current_term,
@@ -227,7 +227,9 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                         time.sleep(self.leader_lease_timeout - now)
                         print("sleep completed")
                     self.leader_lease_timeout = time.time() + self.leader_lease_timeout_interval
-                    print("Node " + str(self.nodeID) + " is now the leader.")
+                    msg = "Node " + str(self.nodeID) + " is now the leader for the term:" + str(self.current_term)
+                    print("Node " + str(self.nodeID) + " is now the leader for the term:" + str(self.current_term) )
+                    log_to_dump(self, str(msg))
                     self.log.append(raft_pb2.LogEntry(term=self.current_term, command='NO-OP'))
                     write_logs(self)
                     self.set_election_timeout()
@@ -266,6 +268,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 now = time.time()
                 if now > self.leader_lease_timeout:
                     print(f"Leader {self.nodeID}'s lease has expired. Stepping down.")
+                    log_to_dump(self, f"Leader {self.nodeID}'s lease has expired. Stepping down." )
                     self.step_down(self.current_term)
                     continue
 
@@ -393,7 +396,7 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 self.ackedLength[self.nodeID] = len(self.log)
                 
                 write_logs(self)
-                msg = f"Node {self.nodeID} accepted AppendEntries RPC from {request.leaderId}."
+                msg = f"Node {self.nodeID} accepted AppendEntries RPC from Node {request.leaderId}."
                 print(msg)
                 log_to_dump(self, msg)
                 # Update commit index if leaderCommit > commit_length
@@ -403,10 +406,12 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                     for i in range(self.commit_length, new_commit_index):
                         # Apply the log[i].command to the state machine here
                         print(f"Applying to state machine: {self.log[i].command}")
+                        msg = f"Node {self.nodeID} (follower) committed the entry {self.log[i].command} to the state machine"  
+                        log_to_dump(self, msg)
                         text_readers.commit_entry(self.nodeID, self.log[i].command)
                     msg = f"Node {self.nodeID} (follower) committed the entry {self.log[i].command} to the state machine"   
                     print(msg)
-                    log_to_dump(self, msg)
+                    # log_to_dump(self, msg)
                     self.commit_length = new_commit_index
                     write_metadata_file(self)
                 return raft_pb2.AppendEntriesResponse(term=self.current_term, success=True)
@@ -461,6 +466,9 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
                 # Apply log[i-1].command to the state machine (e.g., execute the command)
                 text_readers.commit_entry(self.nodeID, self.log[i-1].command)
                 print(f"Committed log index {i-1} with term {self.nodeID, self.log[i-1].term}")
+                msg = f"Node {self.nodeID} (leader) committed the entry {self.log[i-1].command} to the state machine"   
+                print(msg)
+                log_to_dump(self, msg)
                 self.commit_length = i
         write_metadata_file(self)
 
@@ -489,7 +497,6 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
     
     def ServeClient(self, request, context):
         try:
-            print('hello')
             # Correctly access the 'request' field from ServeClientArgs message
             print(request.request)
             try:
@@ -503,10 +510,12 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
 
             if command[0] == "SET":
                 key, value = command[1] , command[2]
+                log_to_dump(self, f"Received SET request from client with key: {key} and value:{value}")
                 initial_commit_len = self.commit_length
                 obj = raft_pb2.LogEntry(term=self.current_term, command=request.request)
                 self.log.append(obj)
                 write_logs(self)
+                
 
                 # wait for request to get committed.
                 while(self.commit_length < initial_commit_len + 1): 
@@ -524,8 +533,9 @@ class RaftServicer(raft_pb2_grpc.RaftServicer):
             elif command[0] == "GET":
                 try:
                     key = command[1]
+                    log_to_dump(self, f"Node {self.nodeID} received GET request from client with key: {key}")
                     value = text_readers.get_value_state_machine(self.nodeID, key)
-                    return raft_pb2.ServeClientReply(data="Value found to be" + str(value), leaderId="", success=True)
+                    return raft_pb2.ServeClientReply(data="Value found to be: " + str(value), leaderId="", success=True)
                 except:
                     return raft_pb2.ServeClientReply(data="Some error occurred", leaderId="", success=False)
 
